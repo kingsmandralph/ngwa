@@ -29,10 +29,12 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         shell: bash
+        env:
+          CARGO_TERM_COLOR: never
         run: |
           set -o pipefail
           if ! cargo test 2>&1 | tee test.log; then
             # Surface the failure as annotations so it is visible without the full log.
-            tail -n 25 test.log | sed 's/^/::error::/'
+            { grep -nE 'error|panicked|STATUS_|LNK|failed' test.log | head -n 6; tail -n 3 test.log; } | sed 's/^/::error::/'
             exit 1
           fi
