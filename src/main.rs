@@ -56,16 +56,30 @@ async fn run() -> Result<()> {
 }
 
 async fn login() -> Result<()> {
-    let homeserver = prompt("Homeserver [matrix.org]: ")?;
-    let homeserver = if homeserver.is_empty() {
-        "matrix.org".to_owned()
-    } else {
-        homeserver
-    };
-    let username = prompt("Username: ")?;
-    if username.is_empty() {
+    let id = prompt("Matrix ID (like @you:matrix.org) or username: ")?;
+    if id.is_empty() {
         bail!("a username is required");
     }
+
+    // A full Matrix ID already names its server; only ask when it doesn't.
+    let (username, homeserver) = match split_matrix_id(&id) {
+        Some((_, server)) => (id.clone(), server.to_owned()),
+        None => {
+            let homeserver = prompt("Homeserver (press Enter for matrix.org): ")?;
+            let homeserver = if homeserver.is_empty() {
+                "matrix.org".to_owned()
+            } else {
+                homeserver
+            };
+            if !looks_like_server(&homeserver) {
+                bail!(
+                    "`{homeserver}` doesn't look like a homeserver address. \
+                     Press Enter for matrix.org, or type one like example.org."
+                );
+            }
+            (id.trim_start_matches('@').to_owned(), homeserver)
+        }
+    };
     let password = rpassword::prompt_password("Password: ")?;
 
     let client = matrix::login(&homeserver, &username, &password).await?;
@@ -114,10 +128,50 @@ async fn rooms() -> Result<()> {
     Ok(())
 }
 
+/// Split `@user:server` into its parts; `None` for a bare username.
+fn split_matrix_id(id: &str) -> Option<(&str, &str)> {
+    let (local, server) = id.strip_prefix('@')?.split_once(':')?;
+    (!local.is_empty() && !server.is_empty()).then_some((local, server))
+}
+
+/// Catch an obvious mistake (such as a username typed into the server
+/// prompt) before trying to reach it over the network.
+fn looks_like_server(s: &str) -> bool {
+    s.starts_with("http://")
+        || s.starts_with("https://")
+        || s.starts_with("localhost")
+        || (s.contains('.') && !s.contains(char::is_whitespace))
+}
+
 fn prompt(label: &str) -> Result<String> {
     print!("{label}");
     io::stdout().flush()?;
     let mut line = String::new();
     io::stdin().read_line(&mut line)?;
     Ok(line.trim().to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_matrix_id_names_its_server() {
+        assert_eq!(
+            split_matrix_id("@ghalahad:matrix.org"),
+            Some(("ghalahad", "matrix.org"))
+        );
+        assert_eq!(split_matrix_id("ghalahad"), None);
+        assert_eq!(split_matrix_id("@ghalahad"), None);
+        assert_eq!(split_matrix_id("@:matrix.org"), None);
+    }
+
+    #[test]
+    fn usernames_are_not_servers() {
+        assert!(looks_like_server("matrix.org"));
+        assert!(looks_like_server("https://matrix.example.com"));
+        assert!(looks_like_server("localhost:8008"));
+        assert!(!looks_like_server("ghalahad"));
+        assert!(!looks_like_server("my server.org"));
+    }
 }

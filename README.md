@@ -21,8 +21,8 @@ web-based clients.
 - **[egui](https://github.com/emilk/egui)** will draw the interface, natively
   on Linux, macOS, and Windows.
 - **Your session stays in the system credential store** (Keychain on macOS,
-  Credential Manager on Windows, Secret Service on Linux). Local data is kept
-  in an encrypted database.
+  Credential Manager on Windows, Secret Service on Linux), or in an owner-only
+  file where there is none. Local data is kept in an encrypted database.
 
 ## Roadmap
 
@@ -50,8 +50,12 @@ cargo run --release -- rooms    # list your rooms
 cargo run --release -- logout   # sign out and forget this device
 ```
 
-On Linux, a Secret Service provider (GNOME Keyring or KWallet) must be running.
-The first build takes a few minutes; later builds are fast.
+At the login prompt, give your full Matrix ID (like `@you:matrix.org`), or a
+username and then press Enter for matrix.org.
+
+Where Linux has no credential store (WSL, servers, minimal desktops), Ngwa
+saves the session in a file only you can read instead. The first build takes
+a few minutes; later builds are fast.
 
 Encrypted rooms appear in the list, but reading their messages arrives in v0.2.
 
