@@ -1,0 +1,31 @@
+[package]
+name = "ngwa"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+description = "A fast, native Matrix client"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/kingsmandralph/ngwa"
+readme = "README.md"
+keywords = ["matrix", "chat", "messaging", "client", "egui"]
+categories = ["network-programming"]
+
+[dependencies]
+anyhow = "1.0.104"
+directories = "6.0.0"
+futures-util = "0.3.34"
+getrandom = "0.4.3"
+hex = "0.4.3"
+keyring = "4.2.0"
+matrix-sdk = "0.19.1"
+matrix-sdk-ui = "0.19.1"
+rpassword = "7.5.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
