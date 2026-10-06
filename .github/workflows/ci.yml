@@ -28,4 +28,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
-        run: cargo test
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo test 2>&1 | tee test.log; then
+            # Surface the failure as annotations so it is visible without the full log.
+            tail -n 25 test.log | sed 's/^/::error::/'
+            exit 1
+          fi
