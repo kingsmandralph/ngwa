@@ -17,7 +17,7 @@ futures-util = "0.3.34"
 getrandom = "0.4.3"
 hex = "0.4.3"
 keyring = "4.2.0"
-matrix-sdk = "0.19.1"
+matrix-sdk = { version = "0.19.1", features = ["bundled-sqlite"] }
 matrix-sdk-ui = "0.19.1"
 rpassword = "7.5.4"
 serde = { version = "1.0.229", features = ["derive"] }
