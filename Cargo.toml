@@ -13,17 +13,24 @@ categories = ["network-programming"]
 [dependencies]
 anyhow = "1.0.104"
 directories = "6.0.0"
+eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 futures-util = "0.3.34"
 getrandom = "0.4.3"
 hex = "0.4.3"
 keyring = "4.2.0"
 matrix-sdk = { version = "0.19.1", features = ["bundled-sqlite"] }
 matrix-sdk-ui = "0.19.1"
+memory-stats = "1.2.0"
 rpassword = "7.5.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+# Not used directly: turns on winit's default features, which eframe leaves
+# off without its own defaults. That gives Wayland windows a title bar.
+winit = "0.30.13"
 
 [profile.release]
 lto = "thin"

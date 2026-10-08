@@ -19,15 +19,32 @@ const FIRST_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 /// Once the list starts arriving, stop when it has been quiet this long.
 const SETTLE_TIME: Duration = Duration::from_millis(1500);
 /// How many rooms to ask the room list for.
-const PAGE_SIZE: usize = 500;
+pub(crate) const PAGE_SIZE: usize = 500;
 
-async fn build_client(homeserver: &str, db_passphrase: &str) -> Result<Client> {
-    Client::builder()
-        .server_name_or_homeserver_url(homeserver)
+/// Where to find the homeserver when building a client.
+#[derive(Clone, Copy)]
+enum Server<'a> {
+    /// What the user typed: a server name like matrix.org, or a URL.
+    /// Resolved through `.well-known` discovery, which needs the network.
+    Discover(&'a str),
+    /// The exact URL saved from an earlier sign-in. No network needed,
+    /// so a saved session opens instantly, even offline.
+    Known(&'a str),
+}
+
+async fn build_client(server: Server<'_>, db_passphrase: &str) -> Result<Client> {
+    let builder = match server {
+        Server::Discover(name) => Client::builder().server_name_or_homeserver_url(name),
+        Server::Known(url) => Client::builder().homeserver_url(url),
+    };
+    let name = match server {
+        Server::Discover(s) | Server::Known(s) => s,
+    };
+    builder
         .sqlite_store(session::store_dir()?, Some(db_passphrase))
         .build()
         .await
-        .with_context(|| format!("could not reach the homeserver for {homeserver}"))
+        .with_context(|| format!("could not reach the homeserver for {name}"))
 }
 
 /// Sign in with a password, start a fresh local store, and save the session.
@@ -40,7 +57,7 @@ pub async fn login(homeserver: &str, username: &str, password: &str) -> Result<C
     }
 
     let db_passphrase = session::new_db_passphrase()?;
-    let client = build_client(homeserver, &db_passphrase).await?;
+    let client = build_client(Server::Discover(homeserver), &db_passphrase).await?;
 
     client
         .matrix_auth()
@@ -69,7 +86,7 @@ pub async fn restore() -> Result<Option<Client>> {
     let Some(stored) = StoredSession::load()? else {
         return Ok(None);
     };
-    let client = build_client(&stored.homeserver, &stored.db_passphrase).await?;
+    let client = build_client(Server::Known(&stored.homeserver), &stored.db_passphrase).await?;
     client
         .restore_session(stored.session)
         .await
@@ -78,13 +95,17 @@ pub async fn restore() -> Result<Option<Client>> {
 }
 
 /// Sign out on the server (best effort) and forget everything stored locally.
-pub async fn logout() -> Result<()> {
-    if let Some(client) = restore().await?
-        && let Err(e) = client.matrix_auth().logout().await
-    {
-        eprintln!(
-            "warning: the server did not confirm sign-out ({e}); forgetting it locally anyway"
-        );
+///
+/// Takes the client by value: every other handle to it (sync service, room
+/// list) must already be dropped, so the local database can be deleted.
+pub async fn logout(client: Option<Client>) -> Result<()> {
+    if let Some(client) = client {
+        if let Err(e) = client.matrix_auth().logout().await {
+            tracing::warn!(
+                "the server did not confirm sign-out ({e}); forgetting it locally anyway"
+            );
+        }
+        drop(client);
     }
     StoredSession::delete()?;
     let dir = session::store_dir()?;
@@ -96,7 +117,9 @@ pub async fn logout() -> Result<()> {
 }
 
 /// One row of the room list, ready to display.
+#[derive(Clone, Debug)]
 pub struct RoomRow {
+    pub id: String,
     pub name: String,
     pub is_invite: bool,
     pub unread: u64,
@@ -104,19 +127,70 @@ pub struct RoomRow {
 }
 
 impl RoomRow {
-    fn from_item(item: &RoomListItem) -> Self {
+    pub(crate) fn from_item(item: &RoomListItem) -> Self {
         let name = item
             .cached_display_name()
             .map(|n| n.to_string())
             .unwrap_or_else(|| item.room_id().to_string());
         let counts = item.unread_notification_counts();
         Self {
+            id: item.room_id().to_string(),
             name,
             is_invite: item.state() == matrix_sdk::RoomState::Invited,
             unread: counts.notification_count,
             mentions: counts.highlight_count,
         }
     }
+}
+
+/// Turn what the user typed into a username and homeserver to sign in with.
+///
+/// A full Matrix ID (`@you:example.org`) names its own server and
+/// `homeserver` is ignored; otherwise an empty `homeserver` means matrix.org.
+pub fn resolve_login(id: &str, homeserver: &str) -> Result<(String, String)> {
+    let id = id.trim();
+    if id.is_empty() {
+        bail!("enter your Matrix ID or username");
+    }
+    if let Some((_, server)) = split_matrix_id(id) {
+        return Ok((id.to_owned(), server.to_owned()));
+    }
+    let homeserver = match homeserver.trim() {
+        "" => "matrix.org",
+        other => other,
+    };
+    if !looks_like_server(homeserver) {
+        bail!(
+            "`{homeserver}` doesn't look like a homeserver address. \
+             Leave it empty for matrix.org, or use one like example.org."
+        );
+    }
+    Ok((id.trim_start_matches('@').to_owned(), homeserver.to_owned()))
+}
+
+/// Split `@user:server` into its parts; `None` for a bare username.
+pub fn split_matrix_id(id: &str) -> Option<(&str, &str)> {
+    let (local, server) = id.strip_prefix('@')?.split_once(':')?;
+    (!local.is_empty() && !server.is_empty()).then_some((local, server))
+}
+
+/// Catch an obvious mistake (such as a username typed where the server goes)
+/// before trying to reach it over the network.
+fn looks_like_server(s: &str) -> bool {
+    s.starts_with("http://")
+        || s.starts_with("https://")
+        || s.starts_with("localhost")
+        || (s.contains('.') && !s.contains(char::is_whitespace))
+}
+
+/// Build the sync service the desktop app runs for as long as it is open.
+/// Offline mode makes it wait out network drops instead of stopping.
+pub async fn sync_service(client: &Client) -> Result<SyncService> {
+    SyncService::builder(client.clone())
+        .with_offline_mode()
+        .build()
+        .await
+        .context("could not start syncing (does this homeserver support sliding sync?)")
 }
 
 /// Sync with sliding sync until the room list has loaded and settled, then
@@ -171,4 +245,45 @@ async fn read_room_list(sync: &SyncService) -> Result<Vec<RoomRow>> {
     }
 
     Ok(rooms.iter().map(RoomRow::from_item).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_matrix_id_names_its_server() {
+        assert_eq!(
+            split_matrix_id("@ghalahad:matrix.org"),
+            Some(("ghalahad", "matrix.org"))
+        );
+        assert_eq!(split_matrix_id("ghalahad"), None);
+        assert_eq!(split_matrix_id("@ghalahad"), None);
+        assert_eq!(split_matrix_id("@:matrix.org"), None);
+    }
+
+    #[test]
+    fn usernames_are_not_servers() {
+        assert!(looks_like_server("matrix.org"));
+        assert!(looks_like_server("https://matrix.example.com"));
+        assert!(looks_like_server("localhost:8008"));
+        assert!(!looks_like_server("ghalahad"));
+        assert!(!looks_like_server("my server.org"));
+    }
+
+    #[test]
+    fn resolve_login_picks_the_server() {
+        let r = |id, hs| resolve_login(id, hs).map_err(|e| e.to_string());
+        assert_eq!(
+            r("@a:example.org", "ignored.org"),
+            Ok(("@a:example.org".into(), "example.org".into()))
+        );
+        assert_eq!(r("a", ""), Ok(("a".into(), "matrix.org".into())));
+        assert_eq!(
+            r("@a", "example.org"),
+            Ok(("a".into(), "example.org".into()))
+        );
+        assert!(r("a", "ghalahad").is_err());
+        assert!(r("  ", "").is_err());
+    }
 }

@@ -7,9 +7,11 @@ web-based clients.
 
 *Ngwa* is Igbo for "quick" — as in *ngwa ngwa*, "hurry up".
 
-> **Status: early development.** Ngwa is at Milestone 1, a terminal preview
-> that signs in and lists your rooms. The desktop window comes next. It is not
-> ready for daily use yet.
+> **Status: early development.** Ngwa signs in and shows a live room list in
+> a desktop window. Opening rooms and sending messages comes next, so it is
+> not ready for daily use yet.
+
+<p align="center"><img src="docs/screenshot.png" width="360" alt="Ngwa's room list, showing rooms with unread counts and an invite"></p>
 
 ## How it works
 
@@ -18,8 +20,10 @@ web-based clients.
 - **Sliding sync** loads only what is on screen, so your room list appears
   almost immediately instead of after a long first sync. Your homeserver must
   support it; matrix.org and current Synapse releases do.
-- **[egui](https://github.com/emilk/egui)** will draw the interface, natively
-  on Linux, macOS, and Windows.
+- **[egui](https://github.com/emilk/egui)** draws the interface with OpenGL,
+  natively on Linux, macOS, and Windows. There is no browser engine.
+- **The window never waits on the network.** Syncing runs on background
+  threads; the window only redraws when something changes.
 - **Your session stays in the system credential store** (Keychain on macOS,
   Credential Manager on Windows, Secret Service on Linux), or in an owner-only
   file where there is none. Local data is kept in an encrypted database.
@@ -29,7 +33,7 @@ web-based clients.
 **v0.1 — a daily driver for unencrypted rooms**
 
 - [x] Milestone 1: sign in with a password, resume the session, list rooms
-- [ ] Milestone 2: the room list in a desktop window
+- [x] Milestone 2: the room list in a desktop window, live, with search
 - [ ] Milestone 3: open a room, read the timeline, scroll back, send and reply
 
 **v0.2 — end-to-end encryption:** device verification, key backup and
@@ -46,15 +50,16 @@ You need [Rust](https://rustup.rs) 1.96 or newer.
 git clone https://github.com/kingsmandralph/ngwa
 cd ngwa
 cargo install --path .   # builds and installs the `ngwa` command
-ngwa login               # your Matrix ID and password
-ngwa rooms               # list your rooms
-ngwa logout              # sign out and forget this device
+ngwa                     # open the app
 ```
+
+The terminal commands still work too: `ngwa login`, `ngwa rooms` and
+`ngwa logout`. To look around without an account, run `ngwa --demo`.
 
 After pulling updates, run `cargo install --path .` again.
 
-At the login prompt, give your full Matrix ID (like `@you:matrix.org`), or a
-username and then press Enter for matrix.org.
+When signing in, give your full Matrix ID (like `@you:matrix.org`). With
+just a username, the homeserver defaults to matrix.org.
 
 Where Linux has no credential store (WSL, servers, minimal desktops), Ngwa
 saves the session in a file only you can read instead. The first build takes
@@ -65,7 +70,8 @@ Encrypted rooms appear in the list, but reading their messages arrives in v0.2.
 ## Contributing
 
 Issues and pull requests are welcome. Run `cargo fmt` and `cargo clippy`
-before opening a pull request.
+before opening a pull request. `cargo run -- --demo` opens the window with
+made-up rooms, which is the quickest way to work on the interface.
 
 ## License
 
