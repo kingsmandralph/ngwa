@@ -20,13 +20,17 @@ Usage:
   ngwa logout    Sign out and forget this device
   ngwa help      Show this message
 
-Set RUST_LOG=info (or debug) to see what the SDK is doing.";
+Set RUST_LOG=matrix_sdk=debug (or info) to see what the SDK is doing.";
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
+            // The SDK logs routine first-sync events (missing account data,
+            // no key backup) as errors. Show only Ngwa's own warnings unless
+            // RUST_LOG asks for more.
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "off,ngwa=warn".into()),
         )
         .with_writer(io::stderr)
         .init();

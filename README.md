@@ -45,10 +45,13 @@ You need [Rust](https://rustup.rs) 1.96 or newer.
 ```sh
 git clone https://github.com/kingsmandralph/ngwa
 cd ngwa
-cargo run --release -- login    # homeserver, username, password
-cargo run --release -- rooms    # list your rooms
-cargo run --release -- logout   # sign out and forget this device
+cargo install --path .   # builds and installs the `ngwa` command
+ngwa login               # your Matrix ID and password
+ngwa rooms               # list your rooms
+ngwa logout              # sign out and forget this device
 ```
+
+After pulling updates, run `cargo install --path .` again.
 
 At the login prompt, give your full Matrix ID (like `@you:matrix.org`), or a
 username and then press Enter for matrix.org.
