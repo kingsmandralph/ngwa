@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Ngwa
+GenericName=Matrix client
+Comment=A fast, native Matrix client
+Exec=ngwa
+Icon=ngwa
+Terminal=false
+Categories=Network;InstantMessaging;Chat;
+Keywords=matrix;chat;messaging;
+StartupWMClass=chat.ngwa.Ngwa

@@ -44,6 +44,7 @@ const LINES: &[&str] = &[
     "The egui demo app is the best documentation honestly",
     "Shipping it 🚀",
     "Nice work everyone",
+    "Release notes are up at https://github.com/kingsmandralph/ngwa/releases, have a look",
 ];
 
 /// (name, unread, mentions, number of messages, pages of older history)

@@ -52,7 +52,11 @@ pub fn run(demo: bool, started: Instant) -> Result<()> {
             .with_title("Ngwa")
             .with_app_id("chat.ngwa.Ngwa")
             .with_inner_size([1080.0, 720.0])
-            .with_min_inner_size([360.0, 480.0]),
+            .with_min_inner_size([360.0, 480.0])
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon/ngwa-256.png"))
+                    .expect("the bundled icon is a valid PNG"),
+            ),
         ..Default::default()
     };
     prefer_x11_on_wsl(&mut options);
@@ -668,9 +672,10 @@ impl App {
                     parts.push(format!("{mb} MB"));
                 }
                 ui.label(RichText::new(parts.join(" · ")).small().color(pal.weak))
-                    .on_hover_text(
-                        "Rooms in your list · time until they were on screen · memory in use",
-                    );
+                    .on_hover_text(format!(
+                        "Ngwa {}\nRooms in your list · time until they were on screen · memory in use",
+                        env!("CARGO_PKG_VERSION")
+                    ));
             });
 
         egui::CentralPanel::default()
@@ -1370,7 +1375,11 @@ fn message_body(ui: &mut Ui, message: &MessageRow, pal: &Palette, actions: &mut 
         }
         BodyKind::Text => RichText::new(&message.body).color(base),
     };
-    ui.add(egui::Label::new(text).wrap());
+    if message.kind == BodyKind::Text && has_link(&message.body) {
+        body_with_links(ui, &message.body, base);
+    } else {
+        ui.add(egui::Label::new(text).wrap());
+    }
 
     let mut notes = Vec::new();
     if message.edited {
@@ -1497,6 +1506,56 @@ fn older_messages_added(old: &[TimelineRow], new: &[TimelineRow]) -> bool {
     }
 }
 
+/// Message text with its web links clickable.
+fn body_with_links(ui: &mut Ui, body: &str, color: Color32) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for (text, is_link) in split_links(body) {
+            if is_link {
+                ui.hyperlink_to(RichText::new(text).color(ACCENT), text);
+            } else {
+                ui.label(RichText::new(text).color(color));
+            }
+        }
+    });
+}
+
+fn has_link(text: &str) -> bool {
+    text.contains("https://") || text.contains("http://")
+}
+
+/// Split text into plain runs and web links, in order.
+fn split_links(text: &str) -> Vec<(&str, bool)> {
+    let mut parts = Vec::new();
+    let mut rest = text;
+    while let Some(start) = [rest.find("https://"), rest.find("http://")]
+        .into_iter()
+        .flatten()
+        .min()
+    {
+        if start > 0 {
+            parts.push((&rest[..start], false));
+        }
+        let tail = &rest[start..];
+        let mut end = tail.find(char::is_whitespace).unwrap_or(tail.len());
+        // Leave trailing punctuation out of the link: "see https://x.org."
+        while end > 0 && tail[..end].ends_with(['.', ',', ')', '!', '?', ':', ';', '"', '\'']) {
+            end -= 1;
+        }
+        if end <= "https://".len() {
+            parts.push((&tail[..end.max(1)], false));
+            rest = &tail[end.max(1)..];
+            continue;
+        }
+        parts.push((&tail[..end], true));
+        rest = &tail[end..];
+    }
+    if !rest.is_empty() {
+        parts.push((rest, false));
+    }
+    parts
+}
+
 // ---- Small helpers -------------------------------------------------------
 
 /// The first letter or digit of a name, for its avatar.
@@ -1587,6 +1646,23 @@ mod tests {
         assert_eq!(truncate("hello world", 5), "hello…");
         assert_eq!(truncate("short", 10), "short");
         assert_eq!(truncate("two\nlines", 10), "two");
+    }
+
+    #[test]
+    fn links_are_split_out() {
+        assert_eq!(
+            split_links("see https://ngwa.chat. thanks"),
+            vec![
+                ("see ", false),
+                ("https://ngwa.chat", true),
+                (". thanks", false)
+            ]
+        );
+        assert_eq!(split_links("no links"), vec![("no links", false)]);
+        assert_eq!(
+            split_links("http://a.b/c?d=1"),
+            vec![("http://a.b/c?d=1", true)]
+        );
     }
 
     #[test]

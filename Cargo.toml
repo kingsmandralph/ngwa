@@ -14,7 +14,7 @@ categories = ["network-programming"]
 anyhow = "1.0.104"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 directories = "6.0.0"
-eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow", "links", "wayland", "x11"] }
 futures-util = "0.3.34"
 getrandom = "0.4.3"
 hex = "0.4.3"
@@ -33,7 +33,16 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # off without its own defaults. That gives Wayland windows a title bar.
 winit = "0.30.13"
 
+[target.'cfg(windows)'.dependencies]
+# To reattach the terminal for `ngwa login` and friends, since the app
+# itself runs without a console window.
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+
+[target.'cfg(windows)'.build-dependencies]
+# Puts the app icon and version into ngwa.exe.
+winresource = "0.1.31"
+
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = true
