@@ -1,11 +1,13 @@
 name: Release
 
 # Pushing a tag like v0.1.0 builds every platform and publishes a GitHub
-# Release with the files attached. Running it by hand builds the same files
-# without publishing, to check a release before tagging it.
+# Release with the files attached. Pushing to the release-check branch, or
+# running it by hand, builds the same files without publishing, to check a
+# release before tagging it.
 on:
   push:
     tags: ["v*"]
+    branches: [release-check]
   workflow_dispatch:
 
 permissions:
