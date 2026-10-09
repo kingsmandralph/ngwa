@@ -4,20 +4,33 @@
 //! sends it [`Command`]s and gets [`Event`]s back, and never waits on the
 //! network itself, so it never freezes.
 
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use eframe::egui;
 use futures_util::{StreamExt, pin_mut};
-use matrix_sdk::Client;
+use matrix_sdk::{
+    Client,
+    ruma::{
+        OwnedEventId, RoomId,
+        api::client::receipt::create_receipt::v3::ReceiptType,
+        events::room::message::{RoomMessageEventContent, RoomMessageEventContentWithoutRelation},
+    },
+};
 use matrix_sdk_ui::{
+    Timeline,
     eyeball_im::Vector,
     room_list_service::{RoomListItem, RoomListLoadingState, filters::new_filter_non_left},
     sync_service::State,
+    timeline::RoomExt,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::matrix::{self, PAGE_SIZE, RoomRow};
+use crate::timeline::{self, TimelineRow};
+
+/// How many older events to ask for each time the user scrolls to the top.
+const PAGE_OF_HISTORY: u16 = 40;
 
 /// What the window asks the engine to do.
 pub enum Command {
@@ -27,6 +40,19 @@ pub enum Command {
         password: String,
     },
     Logout,
+    /// Show this room's messages, replacing any room already open.
+    OpenRoom(String),
+    /// Load older messages in the open room.
+    LoadOlder,
+    /// Send a text message to the open room, optionally as a reply.
+    Send {
+        body: String,
+        reply_to: Option<String>,
+    },
+    /// Join the open room, which the user was invited to.
+    AcceptInvite,
+    /// Turn down the invite to the open room.
+    DeclineInvite,
 }
 
 /// What the engine tells the window.
@@ -44,6 +70,17 @@ pub enum Event {
     ListLoaded,
     /// The state of the connection to the homeserver.
     Sync(SyncStatus),
+    /// The open room's messages, oldest first, after any change.
+    Timeline {
+        room_id: String,
+        rows: Vec<TimelineRow>,
+    },
+    /// Older messages are loading, or have finished loading.
+    History {
+        room_id: String,
+        loading: bool,
+        reached_start: bool,
+    },
     /// Something went wrong that the user should see.
     Error(String),
 }
@@ -88,6 +125,7 @@ impl Backend {
 }
 
 /// Sends events to the window and wakes it up.
+#[derive(Clone)]
 pub struct Outbox {
     tx: mpsc::Sender<Event>,
     ctx: egui::Context,
@@ -140,23 +178,22 @@ async fn run(mut commands: UnboundedReceiver<Command>, out: Outbox) {
 async fn sign_in(commands: &mut UnboundedReceiver<Command>, out: &Outbox) -> Option<Client> {
     out.send(Event::SignedOut);
     loop {
-        match commands.recv().await? {
-            Command::Login {
-                id,
-                homeserver,
-                password,
-            } => {
-                let result = async {
-                    let (username, homeserver) = matrix::resolve_login(&id, &homeserver)?;
-                    matrix::login(&homeserver, &username, &password).await
-                }
-                .await;
-                match result {
-                    Ok(client) => return Some(client),
-                    Err(e) => out.send(Event::LoginFailed(format!("{e:#}"))),
-                }
+        // Anything other than a sign-in is meaningless while signed out.
+        if let Command::Login {
+            id,
+            homeserver,
+            password,
+        } = commands.recv().await?
+        {
+            let result = async {
+                let (username, homeserver) = matrix::resolve_login(&id, &homeserver)?;
+                matrix::login(&homeserver, &username, &password).await
             }
-            Command::Logout => {}
+            .await;
+            match result {
+                Ok(client) => return Some(client),
+                Err(e) => out.send(Event::LoginFailed(format!("{e:#}"))),
+            }
         }
     }
 }
@@ -201,13 +238,14 @@ async fn run_session(
 
     let mut rooms: Vector<RoomListItem> = Vector::new();
     let mut list_loaded = false;
+    let mut open: Option<OpenRoom> = None;
     let exit = loop {
         tokio::select! {
             Some(diffs) = entries.next() => {
                 for diff in diffs {
                     diff.apply(&mut rooms);
                 }
-                out.send(Event::Rooms(rooms.iter().map(RoomRow::from_item).collect()));
+                out.send(Event::Rooms(RoomRow::from_items(&rooms).await));
             }
             Some(state) = loading.next(), if !list_loaded => {
                 if matches!(state, RoomListLoadingState::Loaded { .. }) {
@@ -222,11 +260,37 @@ async fn run_session(
             }
             command = commands.recv() => match command {
                 Some(Command::Logout) => break Exit::Logout,
+                Some(Command::OpenRoom(room_id)) => {
+                    // Drop the previous room first, which stops its updates.
+                    drop(open.take());
+                    open = open_room(client, &room_id, out).await;
+                }
+                Some(Command::LoadOlder) => {
+                    if let Some(room) = &open {
+                        room.load_older(out);
+                    }
+                }
+                Some(Command::Send { body, reply_to }) => {
+                    if let Some(room) = &open {
+                        room.send(body, reply_to, out);
+                    }
+                }
+                Some(Command::AcceptInvite) => {
+                    if let Some(room) = &open {
+                        room.answer_invite(true, out);
+                    }
+                }
+                Some(Command::DeclineInvite) => {
+                    if let Some(room) = open.take() {
+                        room.answer_invite(false, out);
+                    }
+                }
                 Some(Command::Login { .. }) => {}
                 None => break Exit::Closed,
             },
         }
     };
+    drop(open);
 
     // Give the sync loop a moment to wind down cleanly.
     let _ = tokio::time::timeout(Duration::from_secs(3), sync.stop()).await;
@@ -246,8 +310,163 @@ async fn wait_for_logout(commands: &mut UnboundedReceiver<Command>) -> Exit {
     loop {
         match commands.recv().await {
             Some(Command::Logout) => return Exit::Logout,
-            Some(Command::Login { .. }) => {}
+            Some(_) => {}
             None => return Exit::Closed,
         }
+    }
+}
+
+/// The room on screen: its timeline, and the task forwarding its changes.
+struct OpenRoom {
+    room_id: String,
+    room: matrix_sdk::Room,
+    timeline: Option<Arc<Timeline>>,
+    forwarder: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for OpenRoom {
+    fn drop(&mut self) {
+        if let Some(task) = &self.forwarder {
+            task.abort();
+        }
+    }
+}
+
+async fn open_room(client: &Client, room_id: &str, out: &Outbox) -> Option<OpenRoom> {
+    let room = RoomId::parse(room_id)
+        .ok()
+        .and_then(|id| client.get_room(&id));
+    let Some(room) = room else {
+        out.send(Event::Error(
+            "That room isn't available on this account.".into(),
+        ));
+        return None;
+    };
+
+    // An invite has no history to show until it is accepted.
+    if room.state() == matrix_sdk::RoomState::Invited {
+        return Some(OpenRoom {
+            room_id: room_id.to_owned(),
+            room,
+            timeline: None,
+            forwarder: None,
+        });
+    }
+
+    let timeline = match room.timeline().await {
+        Ok(timeline) => Arc::new(timeline),
+        Err(e) => {
+            out.send(Event::Error(format!("could not open the room: {e}")));
+            return None;
+        }
+    };
+    let forwarder = tokio::spawn(forward(timeline.clone(), room_id.to_owned(), out.clone()));
+    Some(OpenRoom {
+        room_id: room_id.to_owned(),
+        room,
+        timeline: Some(timeline),
+        forwarder: Some(forwarder),
+    })
+}
+
+/// Send the open room's messages to the window whenever they change, and
+/// mark them read, since the user is looking at them.
+async fn forward(timeline: Arc<Timeline>, room_id: String, out: Outbox) {
+    let (mut items, stream) = timeline.subscribe().await;
+    pin_mut!(stream);
+    let publish = |items: &Vector<Arc<matrix_sdk_ui::timeline::TimelineItem>>| {
+        out.send(Event::Timeline {
+            room_id: room_id.clone(),
+            rows: timeline::rows(items.iter()),
+        });
+    };
+    publish(&items);
+
+    // If the local cache holds only a few messages, fetch a screenful.
+    if items.len() < 30 {
+        load_older(timeline.clone(), room_id.clone(), out.clone());
+    }
+    let _ = timeline.mark_as_read(ReceiptType::Read).await;
+
+    while let Some(diffs) = stream.next().await {
+        for diff in diffs {
+            diff.apply(&mut items);
+        }
+        publish(&items);
+        let _ = timeline.mark_as_read(ReceiptType::Read).await;
+    }
+}
+
+fn load_older(timeline: Arc<Timeline>, room_id: String, out: Outbox) {
+    tokio::spawn(async move {
+        out.send(Event::History {
+            room_id: room_id.clone(),
+            loading: true,
+            reached_start: false,
+        });
+        let reached_start = match timeline.paginate_backwards(PAGE_OF_HISTORY).await {
+            Ok(reached_start) => reached_start,
+            Err(e) => {
+                out.send(Event::Error(format!("could not load older messages: {e}")));
+                false
+            }
+        };
+        out.send(Event::History {
+            room_id,
+            loading: false,
+            reached_start,
+        });
+    });
+}
+
+impl OpenRoom {
+    fn load_older(&self, out: &Outbox) {
+        if let Some(timeline) = &self.timeline {
+            load_older(timeline.clone(), self.room_id.clone(), out.clone());
+        }
+    }
+
+    fn send(&self, body: String, reply_to: Option<String>, out: &Outbox) {
+        let Some(timeline) = self.timeline.clone() else {
+            return;
+        };
+        let out = out.clone();
+        tokio::spawn(async move {
+            let reply_to = reply_to.and_then(|id| OwnedEventId::try_from(id).ok());
+            // The message appears at once as a local echo; the timeline
+            // marks it failed if the server never takes it.
+            let result = match reply_to {
+                Some(event_id) => timeline
+                    .send_reply(
+                        RoomMessageEventContentWithoutRelation::text_plain(body),
+                        event_id,
+                    )
+                    .await
+                    .map(drop),
+                None => timeline
+                    .send(RoomMessageEventContent::text_plain(body).into())
+                    .await
+                    .map(drop),
+            };
+            if let Err(e) = result {
+                out.send(Event::Error(format!("could not send: {e}")));
+            }
+        });
+    }
+
+    fn answer_invite(&self, accept: bool, out: &Outbox) {
+        let room = self.room.clone();
+        let out = out.clone();
+        tokio::spawn(async move {
+            let result = if accept {
+                room.join().await
+            } else {
+                room.leave().await
+            };
+            if let Err(e) = result {
+                let action = if accept { "join" } else { "decline the invite" };
+                out.send(Event::Error(format!("could not {action}: {e}")));
+            }
+        });
     }
 }

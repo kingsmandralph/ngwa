@@ -124,23 +124,84 @@ pub struct RoomRow {
     pub is_invite: bool,
     pub unread: u64,
     pub mentions: u64,
+    /// "Ada: see you tomorrow", from the room's latest message.
+    pub preview: Option<String>,
+    /// When the latest message was sent, in milliseconds since the epoch.
+    pub timestamp: Option<i64>,
 }
 
 impl RoomRow {
-    pub(crate) fn from_item(item: &RoomListItem) -> Self {
+    pub(crate) async fn from_item(item: &RoomListItem) -> Self {
         let name = item
             .cached_display_name()
             .map(|n| n.to_string())
             .unwrap_or_else(|| item.room_id().to_string());
         let counts = item.unread_notification_counts();
+        let (preview, timestamp) = latest_message(item).await;
         Self {
             id: item.room_id().to_string(),
             name,
             is_invite: item.state() == matrix_sdk::RoomState::Invited,
             unread: counts.notification_count,
             mentions: counts.highlight_count,
+            preview,
+            timestamp,
         }
     }
+
+    /// Rows for a whole room list, in order.
+    pub(crate) async fn from_items(items: &Vector<RoomListItem>) -> Vec<Self> {
+        let mut rows = Vec::with_capacity(items.len());
+        for item in items {
+            rows.push(Self::from_item(item).await);
+        }
+        rows
+    }
+}
+
+async fn latest_message(item: &RoomListItem) -> (Option<String>, Option<i64>) {
+    use matrix_sdk_ui::timeline::{LatestEventValue, RoomExt, TimelineDetails};
+
+    let room: &matrix_sdk::Room = item;
+    let (timestamp, is_own, profile, sender, content) = match room.latest_event().await {
+        LatestEventValue::Remote {
+            timestamp,
+            is_own,
+            profile,
+            sender,
+            content,
+        } => (timestamp, is_own, profile, sender, content),
+        // Local events are ones this device is sending, so they are ours.
+        LatestEventValue::Local {
+            timestamp,
+            profile,
+            sender,
+            content,
+            ..
+        } => (timestamp, true, profile, sender, content),
+        LatestEventValue::RemoteInvite { timestamp, .. } => {
+            return (Some("Invited you".into()), Some(millis(timestamp)));
+        }
+        LatestEventValue::None => return (None, None),
+    };
+    let Some(text) = crate::timeline::preview(&content) else {
+        return (None, Some(millis(timestamp)));
+    };
+    let who = if is_own {
+        "You".to_owned()
+    } else {
+        match profile {
+            TimelineDetails::Ready(p) => p
+                .display_name
+                .unwrap_or_else(|| sender.localpart().to_owned()),
+            _ => sender.localpart().to_owned(),
+        }
+    };
+    (Some(format!("{who}: {text}")), Some(millis(timestamp)))
+}
+
+pub(crate) fn millis(ts: matrix_sdk::ruma::MilliSecondsSinceUnixEpoch) -> i64 {
+    i64::try_from(u64::from(ts.0)).unwrap_or(i64::MAX)
 }
 
 /// Turn what the user typed into a username and homeserver to sign in with.
@@ -244,7 +305,7 @@ async fn read_room_list(sync: &SyncService) -> Result<Vec<RoomRow>> {
         }
     }
 
-    Ok(rooms.iter().map(RoomRow::from_item).collect())
+    Ok(RoomRow::from_items(&rooms).await)
 }
 
 #[cfg(test)]

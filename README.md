@@ -7,11 +7,11 @@ web-based clients.
 
 *Ngwa* is Igbo for "quick" — as in *ngwa ngwa*, "hurry up".
 
-> **Status: early development.** Ngwa signs in and shows a live room list in
-> a desktop window. Opening rooms and sending messages comes next, so it is
-> not ready for daily use yet.
+> **Status: early development.** Ngwa can sign in, list your rooms, open
+> them, and send and reply to messages in unencrypted rooms. Encrypted rooms,
+> images and notifications are still to come.
 
-<p align="center"><img src="docs/screenshot.png" width="360" alt="Ngwa's room list, showing rooms with unread counts and an invite"></p>
+<p align="center"><img src="docs/screenshot.png" width="720" alt="Ngwa with the room list on the left and a conversation open on the right, including a reply"></p>
 
 ## How it works
 
@@ -34,7 +34,9 @@ web-based clients.
 
 - [x] Milestone 1: sign in with a password, resume the session, list rooms
 - [x] Milestone 2: the room list in a desktop window, live, with search
-- [ ] Milestone 3: open a room, read the timeline, scroll back, send and reply
+- [x] Milestone 3: open a room, read the timeline, scroll back, send and reply
+- [ ] Polish before release: formatted messages, links, smaller binary,
+  packaging
 
 **v0.2 — end-to-end encryption:** device verification, key backup and
 recovery, so encrypted DMs work.
@@ -62,10 +64,14 @@ When signing in, give your full Matrix ID (like `@you:matrix.org`). With
 just a username, the homeserver defaults to matrix.org.
 
 Where Linux has no credential store (WSL, servers, minimal desktops), Ngwa
-saves the session in a file only you can read instead. The first build takes
+saves the session in a file only you can read instead. On WSL, Ngwa uses X11
+for a normal Windows title bar; set `NGWA_WAYLAND=1` to use Wayland instead. The first build takes
 a few minutes; later builds are fast.
 
 Encrypted rooms appear in the list, but reading their messages arrives in v0.2.
+
+Ngwa uses the [Inter](https://rsms.me/inter/) typeface, under the SIL Open
+Font License ([assets/fonts/OFL.txt](assets/fonts/OFL.txt)).
 
 ## Contributing
 

@@ -3,12 +3,16 @@
 //! `ngwa` opens the desktop window. The terminal commands (`login`, `rooms`,
 //! `logout`) share the same engine and are handy for scripting and debugging.
 
+// The sync loop's future nests many async calls; the default limit is too low.
+#![recursion_limit = "256"]
+
 mod backend;
 mod cli;
 mod demo;
 mod gui;
 mod matrix;
 mod session;
+mod timeline;
 
 use std::io;
 use std::time::Instant;
