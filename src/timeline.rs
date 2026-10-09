@@ -43,6 +43,8 @@ pub struct MessageRow {
     pub reply: Option<ReplyPreview>,
     pub edited: bool,
     pub state: SendState,
+    /// Why sending failed, when it did.
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -111,10 +113,12 @@ fn event_row(item: &TimelineItem, event: &EventTimelineItem) -> Option<TimelineR
         }
     };
 
-    let state = match event.send_state() {
-        Some(EventSendState::NotSentYet { .. }) => SendState::Sending,
-        Some(EventSendState::SendingFailed { .. }) => SendState::Failed,
-        _ => SendState::Sent,
+    let (state, error) = match event.send_state() {
+        Some(EventSendState::NotSentYet { .. }) => (SendState::Sending, None),
+        Some(EventSendState::SendingFailed { error, .. }) => {
+            (SendState::Failed, Some(send_error_text(&error.to_string())))
+        }
+        _ => (SendState::Sent, None),
     };
 
     Some(TimelineRow::Message(MessageRow {
@@ -129,7 +133,23 @@ fn event_row(item: &TimelineItem, event: &EventTimelineItem) -> Option<TimelineR
         reply,
         edited,
         state,
+        error,
     }))
+}
+
+/// Turn the SDK's error into something a person can act on.
+pub fn send_error_text(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    if lower.contains("m_forbidden") || lower.contains("power level") {
+        "You don't have permission to post in this room.".into()
+    } else if lower.contains("m_limit_exceeded") || lower.contains("too many requests") {
+        "The server is rate limiting you. Try again in a moment.".into()
+    } else if lower.contains("connect") || lower.contains("timed out") || lower.contains("network")
+    {
+        "Couldn't reach the server.".into()
+    } else {
+        raw.chars().take(160).collect()
+    }
 }
 
 fn msg_like_body(kind: &MsgLikeKind) -> (String, BodyKind, bool) {
@@ -256,6 +276,15 @@ mod tests {
         );
         assert_eq!(first_line("\n\nhello\nworld"), "hello");
         assert_eq!(first_line(""), "");
+    }
+
+    #[test]
+    fn send_errors_are_readable() {
+        assert_eq!(
+            send_error_text("the server returned an error: [403 / M_FORBIDDEN] not allowed"),
+            "You don't have permission to post in this room."
+        );
+        assert_eq!(send_error_text("something odd"), "something odd");
     }
 
     #[test]

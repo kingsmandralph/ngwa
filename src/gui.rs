@@ -251,6 +251,8 @@ struct RoomView {
     scroll_to: Option<f32>,
     content_height: f32,
     was_invite: bool,
+    /// False where only admins may post, such as server notice rooms.
+    can_send: bool,
 }
 
 #[derive(Clone)]
@@ -276,6 +278,7 @@ impl RoomView {
             scroll_to: None,
             content_height: 0.0,
             was_invite: is_invite,
+            can_send: true,
         }
     }
 }
@@ -284,6 +287,8 @@ impl RoomView {
 #[derive(Default)]
 struct TimelineActions {
     reply: Option<Reply>,
+    retry: Option<String>,
+    delete: Option<String>,
 }
 
 struct App {
@@ -369,6 +374,11 @@ impl App {
                         }
                         view.rows = rows;
                         view.loaded = true;
+                    }
+                }
+                Event::RoomInfo { room_id, can_send } => {
+                    if let Some(view) = self.open.as_mut().filter(|v| v.id == room_id) {
+                        view.can_send = can_send;
                     }
                 }
                 Event::History {
@@ -867,12 +877,33 @@ impl App {
             view.reply_to = Some(reply);
             view.focus_composer = true;
         }
+        if let Some(key) = actions.retry {
+            self.backend.send(Command::Retry(key));
+        }
+        if let Some(key) = actions.delete {
+            self.backend.send(Command::DeleteUnsent(key));
+        }
     }
 
     fn composer_ui(&mut self, ui: &mut Ui, room_name: &str, pal: &Palette) {
         let Some(view) = self.open.as_mut() else {
             return;
         };
+        if !view.can_send {
+            egui::Panel::bottom("composer")
+                .frame(egui::Frame::new().inner_margin(Margin::symmetric(16, 16)))
+                .show_separator_line(false)
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            RichText::new("Only admins can post in this room.")
+                                .small()
+                                .color(pal.weak),
+                        );
+                    });
+                });
+            return;
+        }
         let mut send = false;
 
         egui::Panel::bottom("composer")
@@ -1285,7 +1316,7 @@ fn message_ui(
             if let Some(reply) = &message.reply {
                 reply_quote(ui, reply, pal);
             }
-            message_body(ui, message, pal);
+            message_body(ui, message, pal, actions);
         });
     });
 
@@ -1324,7 +1355,7 @@ fn message_ui(
     }
 }
 
-fn message_body(ui: &mut Ui, message: &MessageRow, pal: &Palette) {
+fn message_body(ui: &mut Ui, message: &MessageRow, pal: &Palette, actions: &mut TimelineActions) {
     let base = match message.state {
         SendState::Sending => pal.weak,
         _ => pal.text,
@@ -1345,19 +1376,30 @@ fn message_body(ui: &mut Ui, message: &MessageRow, pal: &Palette) {
     if message.edited {
         notes.push(RichText::new("(edited)").small().color(pal.weak));
     }
-    match message.state {
-        SendState::Sending => notes.push(RichText::new("Sending…").small().color(pal.weak)),
-        SendState::Failed => notes.push(
-            RichText::new("Not sent")
-                .small()
-                .color(ui.visuals().error_fg_color),
-        ),
-        SendState::Sent => {}
+    if message.state == SendState::Sending {
+        notes.push(RichText::new("Sending…").small().color(pal.weak));
     }
     if !notes.is_empty() {
         ui.horizontal(|ui| {
             for note in notes {
                 ui.label(note);
+            }
+        });
+    }
+
+    if message.state == SendState::Failed {
+        let reason = message.error.as_deref().unwrap_or("Something went wrong.");
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(format!("Not sent. {reason}"))
+                    .small()
+                    .color(ui.visuals().error_fg_color),
+            );
+            if ui.small_button("Retry").clicked() {
+                actions.retry = Some(message.key.clone());
+            }
+            if ui.small_button("Delete").clicked() {
+                actions.delete = Some(message.key.clone());
             }
         });
     }
@@ -1562,6 +1604,7 @@ mod tests {
                 reply: None,
                 edited: false,
                 state: SendState::Sent,
+                error: None,
             })
         };
         let old = vec![msg("b"), msg("c")];

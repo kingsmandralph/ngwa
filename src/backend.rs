@@ -49,6 +49,10 @@ pub enum Command {
         body: String,
         reply_to: Option<String>,
     },
+    /// Try again to send a message that failed, by its timeline key.
+    Retry(String),
+    /// Give up on a message that hasn't been sent, by its timeline key.
+    DeleteUnsent(String),
     /// Join the open room, which the user was invited to.
     AcceptInvite,
     /// Turn down the invite to the open room.
@@ -75,6 +79,8 @@ pub enum Event {
         room_id: String,
         rows: Vec<TimelineRow>,
     },
+    /// Facts about the open room that change what the window offers.
+    RoomInfo { room_id: String, can_send: bool },
     /// Older messages are loading, or have finished loading.
     History {
         room_id: String,
@@ -275,6 +281,16 @@ async fn run_session(
                         room.send(body, reply_to, out);
                     }
                 }
+                Some(Command::Retry(key)) => {
+                    if let Some(room) = &open {
+                        room.retry(key, out);
+                    }
+                }
+                Some(Command::DeleteUnsent(key)) => {
+                    if let Some(room) = &open {
+                        room.delete_unsent(key, out);
+                    }
+                }
                 Some(Command::AcceptInvite) => {
                     if let Some(room) = &open {
                         room.answer_invite(true, out);
@@ -353,6 +369,24 @@ async fn open_room(client: &Client, room_id: &str, out: &Outbox) -> Option<OpenR
         });
     }
 
+    // A failure earlier (even in a previous run) can leave the room's send
+    // queue paused, so later messages wait forever. Start it afresh.
+    room.send_queue().set_enabled(true);
+
+    // Rooms like server notices only let admins post. Say so up front
+    // instead of offering a composer whose messages can only fail.
+    let can_send = match room.power_levels().await {
+        Ok(levels) => levels.user_can_send_message(
+            room.own_user_id(),
+            matrix_sdk::ruma::events::MessageLikeEventType::RoomMessage,
+        ),
+        Err(_) => true,
+    };
+    out.send(Event::RoomInfo {
+        room_id: room_id.to_owned(),
+        can_send,
+    });
+
     let timeline = match room.timeline().await {
         Ok(timeline) => Arc::new(timeline),
         Err(e) => {
@@ -430,6 +464,8 @@ impl OpenRoom {
         let Some(timeline) = self.timeline.clone() else {
             return;
         };
+        // If an earlier failure paused the queue, sending again resumes it.
+        self.room.send_queue().set_enabled(true);
         let out = out.clone();
         tokio::spawn(async move {
             let reply_to = reply_to.and_then(|id| OwnedEventId::try_from(id).ok());
@@ -454,6 +490,38 @@ impl OpenRoom {
         });
     }
 
+    /// Retry a failed message: unpark it and resume the room's queue.
+    fn retry(&self, key: String, out: &Outbox) {
+        let Some(timeline) = self.timeline.clone() else {
+            return;
+        };
+        let room = self.room.clone();
+        let out = out.clone();
+        tokio::spawn(async move {
+            if let Some(handle) = send_handle(&timeline, &key).await
+                && let Err(e) = handle.unwedge().await
+            {
+                out.send(Event::Error(format!("could not retry: {e}")));
+            }
+            room.send_queue().set_enabled(true);
+        });
+    }
+
+    /// Remove a message that never reached the server.
+    fn delete_unsent(&self, key: String, out: &Outbox) {
+        let Some(timeline) = self.timeline.clone() else {
+            return;
+        };
+        let out = out.clone();
+        tokio::spawn(async move {
+            if let Some(handle) = send_handle(&timeline, &key).await
+                && let Err(e) = handle.abort().await
+            {
+                out.send(Event::Error(format!("could not remove the message: {e}")));
+            }
+        });
+    }
+
     fn answer_invite(&self, accept: bool, out: &Outbox) {
         let room = self.room.clone();
         let out = out.clone();
@@ -469,4 +537,14 @@ impl OpenRoom {
             }
         });
     }
+}
+
+/// The send handle for a local message, found by its timeline key.
+async fn send_handle(timeline: &Timeline, key: &str) -> Option<matrix_sdk::send_queue::SendHandle> {
+    timeline
+        .items()
+        .await
+        .iter()
+        .find(|item| item.unique_id().0 == key)
+        .and_then(|item| item.as_event()?.local_echo_send_handle())
 }

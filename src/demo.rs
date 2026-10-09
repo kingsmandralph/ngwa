@@ -63,7 +63,11 @@ const ROOMS: &[(&str, u64, u64, usize, usize)] = &[
     ("Book club", 0, 0, 8, 0),
     ("Family", 3, 0, 12, 0),
     ("Release planning", 0, 0, 10, 0),
+    // Like matrix.org's welcome room: only the server may post.
+    (READ_ONLY_ROOM, 0, 0, 1, 0),
 ];
+
+const READ_ONLY_ROOM: &str = "Matrix.org (Official Account)";
 
 struct DemoRoom {
     row: RoomRow,
@@ -161,6 +165,7 @@ impl Demo {
                 reply: None,
                 edited: n % 11 == 4,
                 state: SendState::Sent,
+                error: None,
             });
             // Mostly quick back-and-forth, with an occasional long gap.
             time -= if n % 9 == 8 {
@@ -286,6 +291,7 @@ fn incoming(demo: &mut Demo, step: &mut usize, out: &Outbox) {
         reply: None,
         edited: false,
         state: SendState::Sent,
+        error: None,
     });
     if open.as_deref() != Some(target.as_str()) {
         room.row.unread += 1;
@@ -327,10 +333,16 @@ async fn handle(command: Command, demo: &mut Demo, signed_in: &mut bool, out: &O
         }
         Command::OpenRoom(id) => {
             demo.open = Some(id.clone());
+            let mut can_send = true;
             if let Some(room) = demo.room(&id) {
                 room.row.unread = 0;
                 room.row.mentions = 0;
+                can_send = room.row.name != READ_ONLY_ROOM;
             }
+            out.send(Event::RoomInfo {
+                room_id: id.clone(),
+                can_send,
+            });
             out.send(Event::Rooms(demo.room_rows()));
             send_timeline(demo, &id, out);
         }
@@ -390,19 +402,30 @@ async fn handle(command: Command, demo: &mut Demo, signed_in: &mut bool, out: &O
                 reply,
                 edited: false,
                 state: SendState::Sending,
+                error: None,
             });
             send_timeline(demo, &id, out);
 
-            // The "server" accepts it a moment later.
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            let Some(room) = demo.room(&id) else { return };
-            if let Some(message) = room.messages.iter_mut().find(|m| m.key == key) {
-                message.state = SendState::Sent;
-                message.event_id = Some(format!("$event-{key}"));
+            settle(demo, &id, &key, out).await;
+        }
+        Command::Retry(key) => {
+            let Some(id) = demo.open.clone() else { return };
+            if let Some(room) = demo.room(&id)
+                && let Some(message) = room.messages.iter_mut().find(|m| m.key == key)
+            {
+                message.state = SendState::Sending;
+                message.error = None;
+                // Retrying always works in the demo.
+                message.body = message.body.replace("fail", "work");
             }
-            refresh_preview(room);
-            demo.lift(&id);
-            out.send(Event::Rooms(demo.room_rows()));
+            send_timeline(demo, &id, out);
+            settle(demo, &id, &key, out).await;
+        }
+        Command::DeleteUnsent(key) => {
+            let Some(id) = demo.open.clone() else { return };
+            if let Some(room) = demo.room(&id) {
+                room.messages.retain(|m| m.key != key);
+            }
             send_timeline(demo, &id, out);
         }
         Command::AcceptInvite => {
@@ -422,6 +445,28 @@ async fn handle(command: Command, demo: &mut Demo, signed_in: &mut bool, out: &O
             out.send(Event::Rooms(demo.room_rows()));
         }
     }
+}
+
+/// The "server" answers a moment later: a message containing "fail" is
+/// refused, anything else is accepted.
+async fn settle(demo: &mut Demo, id: &str, key: &str, out: &Outbox) {
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let Some(room) = demo.room(id) else { return };
+    let Some(message) = room.messages.iter_mut().find(|m| m.key == key) else {
+        return;
+    };
+    if message.body.contains("fail") {
+        message.state = SendState::Failed;
+        message.error = Some("Couldn't reach the server.".into());
+        send_timeline(demo, id, out);
+        return;
+    }
+    message.state = SendState::Sent;
+    message.event_id = Some(format!("$event-{key}"));
+    refresh_preview(room);
+    demo.lift(id);
+    out.send(Event::Rooms(demo.room_rows()));
+    send_timeline(demo, id, out);
 }
 
 fn show_session(out: &Outbox, demo: &Demo) {
