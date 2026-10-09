@@ -35,43 +35,63 @@ web-based clients.
 - [x] Milestone 1: sign in with a password, resume the session, list rooms
 - [x] Milestone 2: the room list in a desktop window, live, with search
 - [x] Milestone 3: open a room, read the timeline, scroll back, send and reply
-- [ ] Polish before release: formatted messages, links, smaller binary,
-  packaging
+- [x] Release: builds for Windows, macOS and Linux, clickable links
 
 **v0.2 — end-to-end encryption:** device verification, key backup and
 recovery, so encrypted DMs work.
 
-**Later:** media, reactions, edits, threads, notifications, packaging, and
-automatic updates.
+**Later:** media, reactions, edits, threads, notifications, formatted
+messages, and automatic updates.
 
-## Try it
+## Download
+
+Get the latest release from [ngwa.chat](https://ngwa.chat) or the
+[releases page](https://github.com/kingsmandralph/ngwa/releases/latest):
+
+| System | File |
+| --- | --- |
+| Windows 10 and 11 | `ngwa-windows-x86_64.zip`: unzip and run `ngwa.exe` |
+| macOS 11 or later | `ngwa-macos-universal.zip`: move Ngwa to Applications |
+| Linux x86_64 | `ngwa-linux-x86_64.tar.gz`: unpack and run `./install-linux.sh` |
+
+The builds aren't signed by Apple or Microsoft yet. On macOS, right-click
+Ngwa and choose **Open** the first time. On Windows, if SmartScreen appears,
+choose **More info**, then **Run anyway**.
+
+When signing in, give your full Matrix ID (like `@you:matrix.org`). With
+just a username, the homeserver defaults to matrix.org. Your homeserver
+needs sliding sync, which matrix.org and current Synapse releases have.
+
+## Build from source
 
 You need [Rust](https://rustup.rs) 1.96 or newer.
 
 ```sh
-git clone https://github.com/kingsmandralph/ngwa
-cd ngwa
-cargo install --path .   # builds and installs the `ngwa` command
-ngwa                     # open the app
+cargo install --git https://github.com/kingsmandralph/ngwa
+ngwa
 ```
 
-The terminal commands still work too: `ngwa login`, `ngwa rooms` and
-`ngwa logout`. To look around without an account, run `ngwa --demo`.
-
-After pulling updates, run `cargo install --path .` again.
-
-When signing in, give your full Matrix ID (like `@you:matrix.org`). With
-just a username, the homeserver defaults to matrix.org.
+The first build takes a few minutes. The terminal commands work too:
+`ngwa login`, `ngwa rooms`, `ngwa logout` and `ngwa --version`. To look
+around without an account, run `ngwa --demo`.
 
 Where Linux has no credential store (WSL, servers, minimal desktops), Ngwa
-saves the session in a file only you can read instead. On WSL, Ngwa uses X11
-for a normal Windows title bar; set `NGWA_WAYLAND=1` to use Wayland instead. The first build takes
-a few minutes; later builds are fast.
+saves the session in a file only you can read instead. On WSL, Ngwa uses
+X11 for a normal Windows title bar; set `NGWA_WAYLAND=1` to use Wayland
+instead.
 
 Encrypted rooms appear in the list, but reading their messages arrives in v0.2.
 
 Ngwa uses the [Inter](https://rsms.me/inter/) typeface, under the SIL Open
 Font License ([assets/fonts/OFL.txt](assets/fonts/OFL.txt)).
+
+## Releasing
+
+Push a tag like `v0.1.0` and the release workflow builds every platform and
+publishes a GitHub Release with notes from `docs/release-notes/<tag>.md`.
+Pushing to the `release-check` branch runs the same builds without
+publishing. The website in `site/` is static and deploys to Cloudflare
+Pages.
 
 ## Contributing
 
